@@ -1,0 +1,6 @@
+Technique,Test RMSE,Test MAE,Test R²,CV RMSE Mean,CV RMSE Std,Selected Alpha,Non-zero Coefs
+Random Forest,302.6,239.627,0.9227,298.562,5.745,,
+Gradient Boosting,307.432,247.487,0.9202,307.388,4.35,,
+Lasso Regression,327.699,262.257,0.9094,323.323,5.051,0.07220809018385467,46.0
+Ridge Regression,328.169,262.432,0.9091,323.39,4.917,1.151395399326447,
+Linear Regression,336.296,268.97,0.9045,325.816,5.143,,
