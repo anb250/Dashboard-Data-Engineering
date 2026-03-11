@@ -405,8 +405,7 @@ with tab5:
 
     delta_co2 = current_summary["Fleet average CO2"] - baseline_summary["Fleet average CO2"]
     delta_demand = current_summary["Fleet weighted demand"] - baseline_summary["Fleet weighted demand"]
-    delta_revenue = current_summary["Fleet weighted revenue"] - baseline_summary["Fleet weighted_revenue"]
-
+    delta_revenue = current_summary["Fleet weighted revenue"] - baseline_summary["Fleet weighted revenue"]
     c1, c2, c3 = st.columns(3)
     c1.metric("Fleet average CO2", f"{current_summary['Fleet average CO2']:.2f} g/km", delta=f"{delta_co2:+.2f} g/km")
     c2.metric("Fleet weighted demand", f"{current_summary['Fleet weighted demand']:.0f}", delta=f"{delta_demand:+.0f}")
