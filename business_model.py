@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
+import unicodedata
 from pathlib import Path
 from typing import Dict, Tuple
 
@@ -24,36 +26,25 @@ DEFAULT_WEIGHTS = {
     "engine": 0.20,
 }
 
-REQUIRED_COLUMNS = {
-    "brand": "Brand",
-    "model": "Model",
-    "vehicle_class": "Vehicle Class",
-    "co2": "CO₂ g/km (max)",
-    "engine": "Engine Size L",
-    "price": "Price Proxy CAD",
-    "sales": "CA Sales 2026 Jan–Feb",
-}
 
-OPTIONAL_COLUMNS = [
-    "CA Brand Total",
-    "CA Sales Share",
-    "Fuel Type [CA]",
-    "Transmission [CA]",
-    "Class Avg CO₂",
-    "Class Avg MPG",
-    "Class Avg Engine L",
-    "Class Avg Cylinders",
-    "Demand Target Units",
-    "Revenue Target CAD",
-    "Brand Benchmark CAD",
-    "Price Index (class)",
-    "Powertrain Type",
-    "Cylinders",
-    "Max Power PS (max)",
-    "Max Torque Nm (max)",
-    "Drive Config",
-    "Seats (max)",
-]
+def normalize_text(value) -> str:
+    if pd.isna(value):
+        return ""
+    text = str(value).strip()
+    text = unicodedata.normalize("NFKD", text)
+    text = text.replace("₂", "2")
+    text = text.replace("–", "-")
+    text = text.replace("—", "-")
+    text = text.lower()
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def clean_missing_markers(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    for col in out.columns:
+        out[col] = out[col].replace({"—": np.nan, "": np.nan, "nan": np.nan})
+    return out
 
 
 def minmax_penalty(series: pd.Series) -> pd.Series:
@@ -67,23 +58,14 @@ def minmax_penalty(series: pd.Series) -> pd.Series:
     return (s - lo) / (hi - lo)
 
 
-def _normalize_header_value(x) -> str:
-    if pd.isna(x):
-        return ""
-    return str(x).strip()
-
-
-def _find_english_header_row(raw: pd.DataFrame, search_rows: int = 8) -> int:
-    """
-    Find the row that contains the actual English field headers.
-    """
-    expected = {"Brand", "Model", "Vehicle Class"}
+def find_header_row(raw: pd.DataFrame, search_rows: int = 10) -> int:
+    expected = {"brand", "model", "vehicle class"}
 
     best_row = None
     best_score = -1
 
     for i in range(min(search_rows, len(raw))):
-        row_values = {_normalize_header_value(v) for v in raw.iloc[i].tolist()}
+        row_values = {normalize_text(v) for v in raw.iloc[i].tolist()}
         score = len(expected.intersection(row_values))
 
         if score > best_score:
@@ -94,18 +76,43 @@ def _find_english_header_row(raw: pd.DataFrame, search_rows: int = 8) -> int:
             return i
 
     if best_row is None or best_score <= 0:
-        raise ValueError(
-            "Could not detect the English header row automatically. "
-            "Please inspect the first 8 rows of the sheet."
-        )
+        raise ValueError("Could not detect the English header row automatically.")
 
     return best_row
 
 
-def load_master_sheet(file_path: str | Path, sheet_name: str = "SUV主表") -> pd.DataFrame:
-    """
-    Load the bilingual SUV master sheet and automatically detect the English header row.
-    """
+def build_column_map(columns) -> Dict[str, str]:
+    normalized = {normalize_text(col): col for col in columns}
+
+    aliases = {
+        "brand": ["brand"],
+        "model": ["model"],
+        "vehicle_class": ["vehicle class"],
+        "co2": ["co2 g/km (max)", "co2 g/km max", "co2", "co2 g/km"],
+        "engine": ["engine size l", "engine size", "engine"],
+        "price": ["price proxy cad", "price proxy", "price"],
+        "sales": ["ca sales 2026 jan-feb", "ca sales 2026 jan-feb", "sales"],
+    }
+
+    out = {}
+
+    for key, options in aliases.items():
+        found = None
+        for option in options:
+            if option in normalized:
+                found = normalized[option]
+                break
+        if found is None:
+            raise ValueError(
+                f"Could not find required column for '{key}'. "
+                f"Available columns: {list(columns)}"
+            )
+        out[key] = found
+
+    return out
+
+
+def load_master_sheet(file_path: str | Path, sheet_name: str = "SUV主表") -> Tuple[pd.DataFrame, Dict[str, str]]:
     file_path = Path(file_path)
 
     if not file_path.exists():
@@ -116,36 +123,21 @@ def load_master_sheet(file_path: str | Path, sheet_name: str = "SUV主表") -> p
 
     raw = pd.read_excel(file_path, sheet_name=sheet_name, header=None)
 
-    header_row_idx = _find_english_header_row(raw)
-    english_header = [_normalize_header_value(v) for v in raw.iloc[header_row_idx].tolist()]
+    header_row_idx = find_header_row(raw)
+    headers = [str(v).strip() if not pd.isna(v) else "" for v in raw.iloc[header_row_idx].tolist()]
 
     df = raw.iloc[header_row_idx + 1:].copy().reset_index(drop=True)
-    df.columns = english_header
-
+    df.columns = headers
     df = df.loc[:, [str(c).strip() != "" for c in df.columns]]
+    df = clean_missing_markers(df)
 
-    for col in df.columns:
-        if isinstance(col, str):
-            df[col] = df[col].replace({"—": np.nan, "": np.nan, "nan": np.nan})
+    col_map = build_column_map(df.columns)
 
-    missing = [excel_name for excel_name in REQUIRED_COLUMNS.values() if excel_name not in df.columns]
-    if missing:
-        preview_rows = raw.head(6).fillna("").astype(str)
-        raise ValueError(
-            f"Missing required columns in workbook: {missing}\n"
-            f"Detected header row index: {header_row_idx}\n"
-            f"Available columns: {list(df.columns)}\n\n"
-            f"Top rows preview:\n{preview_rows.to_string(index=True, header=False)}"
-        )
-
-    keep = list(REQUIRED_COLUMNS.values()) + [c for c in OPTIONAL_COLUMNS if c in df.columns]
-    df = df[keep].copy()
-
-    numeric_cols = [
-        REQUIRED_COLUMNS["co2"],
-        REQUIRED_COLUMNS["engine"],
-        REQUIRED_COLUMNS["price"],
-        REQUIRED_COLUMNS["sales"],
+    numeric_candidates = [
+        col_map["co2"],
+        col_map["engine"],
+        col_map["price"],
+        col_map["sales"],
         "CA Brand Total",
         "CA Sales Share",
         "Demand Target Units",
@@ -156,35 +148,36 @@ def load_master_sheet(file_path: str | Path, sheet_name: str = "SUV主表") -> p
         "Max Power PS (max)",
         "Max Torque Nm (max)",
         "Seats (max)",
-        "Class Avg CO₂",
+        "Class Avg CO2",
         "Class Avg MPG",
         "Class Avg Engine L",
         "Class Avg Cylinders",
+        "Class Avg CO₂",
     ]
 
-    for col in numeric_cols:
+    for col in numeric_candidates:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    df["Brand"] = df["Brand"].astype(str).str.strip().str.upper()
-    df["Model"] = df["Model"].astype(str).str.strip()
-    df["Vehicle Class"] = df["Vehicle Class"].astype(str).str.strip()
+    df[col_map["brand"]] = df[col_map["brand"]].astype(str).str.strip().str.upper()
+    df[col_map["model"]] = df[col_map["model"]].astype(str).str.strip()
+    df[col_map["vehicle_class"]] = df[col_map["vehicle_class"]].astype(str).str.strip()
 
     df = df.dropna(
         subset=[
-            "Brand",
-            "Model",
-            REQUIRED_COLUMNS["co2"],
-            REQUIRED_COLUMNS["engine"],
-            REQUIRED_COLUMNS["price"],
+            col_map["brand"],
+            col_map["model"],
+            col_map["co2"],
+            col_map["engine"],
+            col_map["price"],
         ]
     ).reset_index(drop=True)
 
-    return df
+    return df, col_map
 
 
-def filter_japanese_brands(df: pd.DataFrame) -> pd.DataFrame:
-    out = df[df["Brand"].isin(JAPANESE_BRANDS)].copy()
+def filter_japanese_brands(df: pd.DataFrame, col_map: Dict[str, str]) -> pd.DataFrame:
+    out = df[df[col_map["brand"]].isin(JAPANESE_BRANDS)].copy()
 
     if out.empty:
         raise ValueError("No Japanese brands found after filtering.")
@@ -192,11 +185,11 @@ def filter_japanese_brands(df: pd.DataFrame) -> pd.DataFrame:
     return out.reset_index(drop=True)
 
 
-def compute_business_scores(df: pd.DataFrame, weights: Dict[str, float] | None = None) -> pd.DataFrame:
-    """
-    Lower CO2, lower price, and lower engine size are treated as better.
-    A weighted penalty score is converted into a 0 to 100 business index.
-    """
+def compute_business_scores(
+    df: pd.DataFrame,
+    col_map: Dict[str, str],
+    weights: Dict[str, float] | None = None
+) -> pd.DataFrame:
     w = DEFAULT_WEIGHTS.copy()
     if weights:
         w.update(weights)
@@ -210,9 +203,9 @@ def compute_business_scores(df: pd.DataFrame, weights: Dict[str, float] | None =
 
     out = df.copy()
 
-    out["co2_penalty"] = minmax_penalty(out[REQUIRED_COLUMNS["co2"]])
-    out["price_penalty"] = minmax_penalty(out[REQUIRED_COLUMNS["price"]])
-    out["engine_penalty"] = minmax_penalty(out[REQUIRED_COLUMNS["engine"]])
+    out["co2_penalty"] = minmax_penalty(out[col_map["co2"]])
+    out["price_penalty"] = minmax_penalty(out[col_map["price"]])
+    out["engine_penalty"] = minmax_penalty(out[col_map["engine"]])
 
     out["business_score"] = (
         w["co2"] * out["co2_penalty"]
@@ -224,23 +217,20 @@ def compute_business_scores(df: pd.DataFrame, weights: Dict[str, float] | None =
     out["business_rank"] = out["business_score"].rank(method="dense", ascending=True).astype(int)
 
     return out.sort_values(
-        ["business_score", REQUIRED_COLUMNS["sales"]],
+        ["business_score", col_map["sales"]],
         ascending=[True, False]
     ).reset_index(drop=True)
 
 
 def run_clustering(
     df: pd.DataFrame,
+    col_map: Dict[str, str],
     n_clusters: int = 3,
     random_state: int = 42
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     out = df.copy()
 
-    feature_cols = [
-        REQUIRED_COLUMNS["price"],
-        REQUIRED_COLUMNS["co2"],
-        REQUIRED_COLUMNS["engine"],
-    ]
+    feature_cols = [col_map["price"], col_map["co2"], col_map["engine"]]
 
     imputer = SimpleImputer(strategy="median")
     scaler = StandardScaler()
@@ -254,12 +244,12 @@ def run_clustering(
     cluster_profile = (
         out.groupby("cluster", dropna=False)
         .agg(
-            vehicles=("Model", "count"),
+            vehicles=(col_map["model"], "count"),
             avg_business_index=("business_index", "mean"),
-            avg_price=(REQUIRED_COLUMNS["price"], "mean"),
-            avg_co2=(REQUIRED_COLUMNS["co2"], "mean"),
-            avg_engine=(REQUIRED_COLUMNS["engine"], "mean"),
-            avg_sales=(REQUIRED_COLUMNS["sales"], "mean"),
+            avg_price=(col_map["price"], "mean"),
+            avg_co2=(col_map["co2"], "mean"),
+            avg_engine=(col_map["engine"], "mean"),
+            avg_sales=(col_map["sales"], "mean"),
         )
         .reset_index()
         .sort_values("avg_business_index", ascending=False)
@@ -269,18 +259,19 @@ def run_clustering(
     return out, cluster_profile
 
 
-def build_brand_summary(df: pd.DataFrame) -> pd.DataFrame:
+def build_brand_summary(df: pd.DataFrame, col_map: Dict[str, str]) -> pd.DataFrame:
     brand = (
-        df.groupby("Brand", dropna=False)
+        df.groupby(col_map["brand"], dropna=False)
         .agg(
-            models=("Model", "count"),
+            models=(col_map["model"], "count"),
             avg_business_index=("business_index", "mean"),
-            avg_co2=(REQUIRED_COLUMNS["co2"], "mean"),
-            avg_price=(REQUIRED_COLUMNS["price"], "mean"),
-            avg_engine=(REQUIRED_COLUMNS["engine"], "mean"),
-            total_sales=(REQUIRED_COLUMNS["sales"], "sum"),
+            avg_co2=(col_map["co2"], "mean"),
+            avg_price=(col_map["price"], "mean"),
+            avg_engine=(col_map["engine"], "mean"),
+            total_sales=(col_map["sales"], "sum"),
         )
         .reset_index()
+        .rename(columns={col_map["brand"]: "Brand"})
         .sort_values(["avg_business_index", "total_sales"], ascending=[False, False])
         .reset_index(drop=True)
     )
@@ -301,7 +292,7 @@ def build_brand_summary(df: pd.DataFrame) -> pd.DataFrame:
 
     def cause(row: pd.Series) -> str:
         gaps = {
-            "High CO₂": row["co2_gap"],
+            "High CO2": row["co2_gap"],
             "High price": row["price_gap"],
             "Large engine size": row["engine_gap"],
         }
@@ -311,11 +302,7 @@ def build_brand_summary(df: pd.DataFrame) -> pd.DataFrame:
     return brand
 
 
-def executive_kpis(
-    scored_df: pd.DataFrame,
-    brand_summary: pd.DataFrame,
-    cluster_profile: pd.DataFrame
-) -> Dict[str, object]:
+def executive_kpis(scored_df: pd.DataFrame, brand_summary: pd.DataFrame, cluster_profile: pd.DataFrame, col_map: Dict[str, str]) -> Dict[str, object]:
     best_vehicle = scored_df.iloc[0]
 
     lowest_co2_brand = brand_summary.sort_values(
@@ -334,7 +321,7 @@ def executive_kpis(
     ).iloc[0]
 
     return {
-        "best_japanese_car": f"{best_vehicle['Brand']} {best_vehicle['Model']}",
+        "best_japanese_car": f"{best_vehicle[col_map['brand']]} {best_vehicle[col_map['model']]}",
         "best_business_index": round(float(best_vehicle["business_index"]), 2),
         "lowest_co2_brand": str(lowest_co2_brand["Brand"]),
         "lowest_co2_brand_value": round(float(lowest_co2_brand["avg_co2"]), 2),
@@ -344,17 +331,18 @@ def executive_kpis(
         "worst_underperforming_value": round(float(worst_underperformer["avg_business_index"]), 2),
         "cluster_count": int(cluster_profile["cluster"].nunique()),
         "vehicle_count": int(scored_df.shape[0]),
-        "brand_count": int(scored_df["Brand"].nunique()),
+        "brand_count": int(scored_df[col_map["brand"]].nunique()),
     }
 
 
-def build_top10_share(scored_df: pd.DataFrame) -> pd.DataFrame:
+def build_top10_share(scored_df: pd.DataFrame, col_map: Dict[str, str]) -> pd.DataFrame:
     top10 = scored_df.nsmallest(10, "business_score").copy()
 
     share = (
-        top10.groupby("Brand")
+        top10.groupby(col_map["brand"])
         .size()
         .reset_index(name="top10_models")
+        .rename(columns={col_map["brand"]: "Brand"})
         .sort_values(["top10_models", "Brand"], ascending=[False, True])
         .reset_index(drop=True)
     )
@@ -366,7 +354,7 @@ def build_top10_share(scored_df: pd.DataFrame) -> pd.DataFrame:
 def save_plots(
     scored_df: pd.DataFrame,
     brand_summary: pd.DataFrame,
-    cluster_profile: pd.DataFrame,
+    col_map: Dict[str, str],
     output_dir: str | Path
 ) -> None:
     out = Path(output_dir)
@@ -375,7 +363,7 @@ def save_plots(
     plt.style.use("default")
 
     top10 = scored_df.nsmallest(10, "business_score").copy()
-    labels = top10["Brand"] + " " + top10["Model"]
+    labels = top10[col_map["brand"]] + " " + top10[col_map["model"]]
 
     plt.figure(figsize=(12, 6))
     plt.barh(labels, top10["business_index"])
@@ -398,19 +386,19 @@ def save_plots(
     plt.close()
 
     plt.figure(figsize=(10, 6))
-    plt.scatter(scored_df[REQUIRED_COLUMNS["engine"]], scored_df[REQUIRED_COLUMNS["co2"]])
-    plt.title("Engine Size vs CO₂")
+    plt.scatter(scored_df[col_map["engine"]], scored_df[col_map["co2"]])
+    plt.title("Engine Size vs CO2")
     plt.xlabel("Engine Size (L)")
-    plt.ylabel("CO₂ (g/km)")
+    plt.ylabel("CO2 (g/km)")
     plt.tight_layout()
     plt.savefig(out / "engine_vs_co2.png", dpi=300)
     plt.close()
 
     plt.figure(figsize=(10, 6))
     plt.bar(brand_summary["Brand"], brand_summary["avg_co2"])
-    plt.title("Average CO₂ by Brand")
+    plt.title("Average CO2 by Brand")
     plt.xlabel("Brand")
-    plt.ylabel("Average CO₂ (g/km)")
+    plt.ylabel("Average CO2 (g/km)")
     plt.xticks(rotation=45)
     plt.tight_layout()
     plt.savefig(out / "avg_co2_by_brand.png", dpi=300)
@@ -418,12 +406,12 @@ def save_plots(
 
     plt.figure(figsize=(10, 6))
     plt.scatter(
-        scored_df[REQUIRED_COLUMNS["co2"]],
-        scored_df[REQUIRED_COLUMNS["price"]],
+        scored_df[col_map["co2"]],
+        scored_df[col_map["price"]],
         c=scored_df["cluster"]
     )
-    plt.title("Commercial Positioning: Price vs CO₂")
-    plt.xlabel("CO₂ (g/km)")
+    plt.title("Commercial Positioning: Price vs CO2")
+    plt.xlabel("CO2 (g/km)")
     plt.ylabel("Price Proxy (CAD)")
     plt.tight_layout()
     plt.savefig(out / "price_vs_co2_clusters.png", dpi=300)
@@ -431,8 +419,8 @@ def save_plots(
 
     plt.figure(figsize=(10, 6))
     plt.scatter(
-        scored_df[REQUIRED_COLUMNS["engine"]],
-        scored_df[REQUIRED_COLUMNS["price"]],
+        scored_df[col_map["engine"]],
+        scored_df[col_map["price"]],
         c=scored_df["cluster"]
     )
     plt.title("Cluster-Based Positioning Map")
@@ -459,13 +447,13 @@ def run_business_model(
     n_clusters: int = 3,
     weights: Dict[str, float] | None = None,
 ) -> Dict[str, object]:
-    base = load_master_sheet(file_path)
-    jp = filter_japanese_brands(base)
-    scored = compute_business_scores(jp, weights=weights)
-    clustered, cluster_profile = run_clustering(scored, n_clusters=n_clusters)
-    brand_summary = build_brand_summary(clustered)
-    kpis = executive_kpis(clustered, brand_summary, cluster_profile)
-    top10_share = build_top10_share(clustered)
+    base, col_map = load_master_sheet(file_path)
+    jp = filter_japanese_brands(base, col_map)
+    scored = compute_business_scores(jp, col_map, weights=weights)
+    clustered, cluster_profile = run_clustering(scored, col_map, n_clusters=n_clusters)
+    brand_summary = build_brand_summary(clustered, col_map)
+    kpis = executive_kpis(clustered, brand_summary, cluster_profile, col_map)
+    top10_share = build_top10_share(clustered, col_map)
 
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -476,7 +464,7 @@ def run_business_model(
     top10_share.to_csv(out / "top10_brand_share.csv", index=False)
     pd.DataFrame([kpis]).to_csv(out / "executive_kpis.csv", index=False)
 
-    save_plots(clustered, brand_summary, cluster_profile, out)
+    save_plots(clustered, brand_summary, col_map, out)
 
     return {
         "scored_df": clustered,
@@ -485,6 +473,7 @@ def run_business_model(
         "top10_share": top10_share,
         "kpis": kpis,
         "output_dir": str(out),
+        "col_map": col_map,
     }
 
 
@@ -519,10 +508,3 @@ if __name__ == "__main__":
         print()
     else:
         main()
-
-
-
-Notebook environment detected. No automatic CLI run was performed.
-Run this in a new cell:
-
-results = main(file_path="Canada_JP_SUV_FILLED_FINAL_v2.xlsx", output_dir="business_outputs", clusters=3)
