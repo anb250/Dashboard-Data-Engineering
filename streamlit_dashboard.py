@@ -93,7 +93,7 @@ def prepare_scatter_df(
     numeric_cols = [x_col, y_col]
     if size_col is not None:
         numeric_cols.append(size_col)
-    if "business_index" in plot_df.columns:
+    if "business_index" in plot_df.columns and "business_index" not in numeric_cols:
         numeric_cols.append("business_index")
 
     plot_df = coerce_numeric_columns(plot_df, numeric_cols)
@@ -117,8 +117,12 @@ def prepare_scatter_df(
         plot_df["cluster"] = plot_df["cluster"].astype(str)
 
     if hover_cols:
+        protected_cols = {x_col, y_col}
+        if size_col is not None:
+            protected_cols.add(size_col)
+
         for col in hover_cols:
-            if col in plot_df.columns:
+            if col in plot_df.columns and col not in protected_cols:
                 plot_df[col] = plot_df[col].astype(str)
 
     return plot_df.reset_index(drop=True)
@@ -208,13 +212,13 @@ k5.metric(
 )
 
 
-exec_tab, portfolio_tab, efficiency_tab, commercial_tab, diagnosis_tab, data_tab = st.tabs([
+exec_tab, portfolio_tab, efficiency_tab, commercial_tab, diagnosis_tab, professor_tab = st.tabs([
     "Executive View",
     "Portfolio Performance",
     "Efficiency and Emissions",
     "Commercial Competitiveness",
     "Underperformance Diagnosis",
-    "Data and Support",
+    "Professor Data Room",
 ])
 
 
@@ -321,7 +325,7 @@ with efficiency_tab:
             y_col=co2_col,
             size_col="business_index",
             color_col=brand_col,
-            hover_cols=[model_col, price_col, sales_col, "business_index"],
+            hover_cols=[model_col, price_col, sales_col],
         )
 
         fig = px.scatter(
@@ -468,8 +472,8 @@ with diagnosis_tab:
     )
 
 
-with data_tab:
-    st.subheader("Data and Support")
+with professor_tab:
+    st.subheader("Professor Data Room")
     st.markdown(
         "This section preserves the full analytical detail behind the executive dashboard."
     )
