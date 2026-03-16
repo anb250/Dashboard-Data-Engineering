@@ -1,14 +1,11 @@
-# this is the dashboard app
-
 from __future__ import annotations
 
 from pathlib import Path
 
-import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from business_model import run_business_model, DEFAULT_WEIGHTS, REQUIRED_COLUMNS
+from business_model import run_business_model, DEFAULT_WEIGHTS
 
 
 st.set_page_config(
@@ -33,11 +30,11 @@ with st.sidebar:
         min_value=2,
         max_value=6,
         value=3,
-        step=1
+        step=1,
     )
 
     st.markdown("### Business Score Weights")
-    co2_w = st.slider("CO₂ weight", 0.0, 1.0, float(DEFAULT_WEIGHTS["co2"]), 0.05)
+    co2_w = st.slider("CO2 weight", 0.0, 1.0, float(DEFAULT_WEIGHTS["co2"]), 0.05)
     price_w = st.slider("Price weight", 0.0, 1.0, float(DEFAULT_WEIGHTS["price"]), 0.05)
     engine_w = st.slider("Engine size weight", 0.0, 1.0, float(DEFAULT_WEIGHTS["engine"]), 0.05)
 
@@ -87,6 +84,14 @@ brand_summary = results["brand_summary"]
 cluster_profile = results["cluster_profile"]
 top10_share = results["top10_share"]
 kpis = results["kpis"]
+col_map = results["col_map"]
+
+brand_col = col_map["brand"]
+model_col = col_map["model"]
+co2_col = col_map["co2"]
+engine_col = col_map["engine"]
+price_col = col_map["price"]
+sales_col = col_map["sales"]
 
 
 k1, k2, k3, k4, k5 = st.columns(5)
@@ -98,7 +103,7 @@ k1.metric(
 )
 
 k2.metric(
-    "Lowest CO₂ brand",
+    "Lowest CO2 brand",
     kpis["lowest_co2_brand"],
     f"{kpis['lowest_co2_brand_value']} g/km"
 )
@@ -122,8 +127,6 @@ k5.metric(
 )
 
 
-# tabs
-
 exec_tab, portfolio_tab, efficiency_tab, commercial_tab, diagnosis_tab, professor_tab = st.tabs([
     "Executive View",
     "Portfolio Performance",
@@ -141,7 +144,7 @@ with exec_tab:
 
     with c1:
         top10 = scored_df.nsmallest(10, "business_score").copy()
-        top10["Vehicle"] = top10["Brand"] + " " + top10["Model"]
+        top10["Vehicle"] = top10[brand_col].astype(str) + " " + top10[model_col].astype(str)
 
         fig = px.bar(
             top10.sort_values("business_index", ascending=True),
@@ -153,7 +156,7 @@ with exec_tab:
                 "business_index": "Business Index",
                 "Vehicle": "Vehicle",
             },
-            color="Brand",
+            color=brand_col,
         )
         fig.update_layout(yaxis={"categoryorder": "total ascending"})
         st.plotly_chart(fig, use_container_width=True)
@@ -233,20 +236,20 @@ with efficiency_tab:
     with c1:
         fig = px.scatter(
             scored_df,
-            x=REQUIRED_COLUMNS["engine"],
-            y=REQUIRED_COLUMNS["co2"],
-            color="Brand",
+            x=engine_col,
+            y=co2_col,
+            color=brand_col,
             size="business_index",
             hover_data=[
-                "Model",
-                REQUIRED_COLUMNS["price"],
-                REQUIRED_COLUMNS["sales"],
+                model_col,
+                price_col,
+                sales_col,
                 "business_index",
             ],
-            title="Engine Size versus CO₂",
+            title="Engine Size versus CO2",
             labels={
-                REQUIRED_COLUMNS["engine"]: "Engine Size (L)",
-                REQUIRED_COLUMNS["co2"]: "CO₂ (g/km)",
+                engine_col: "Engine Size (L)",
+                co2_col: "CO2 (g/km)",
             },
         )
         st.plotly_chart(fig, use_container_width=True)
@@ -258,8 +261,8 @@ with efficiency_tab:
             x="Brand",
             y="avg_co2",
             color="Brand",
-            title="Average CO₂ by Brand",
-            labels={"avg_co2": "Average CO₂ (g/km)"},
+            title="Average CO2 by Brand",
+            labels={"avg_co2": "Average CO2 (g/km)"},
         )
         st.plotly_chart(fig, use_container_width=True)
 
@@ -276,21 +279,21 @@ with commercial_tab:
     with c1:
         fig = px.scatter(
             scored_df,
-            x=REQUIRED_COLUMNS["co2"],
-            y=REQUIRED_COLUMNS["price"],
+            x=co2_col,
+            y=price_col,
             color="cluster",
-            symbol="Brand",
-            size=REQUIRED_COLUMNS["sales"],
+            symbol=brand_col,
+            size=sales_col,
             hover_data=[
-                "Brand",
-                "Model",
-                REQUIRED_COLUMNS["engine"],
+                brand_col,
+                model_col,
+                engine_col,
                 "business_index",
             ],
-            title="Price versus CO₂",
+            title="Price versus CO2",
             labels={
-                REQUIRED_COLUMNS["co2"]: "CO₂ (g/km)",
-                REQUIRED_COLUMNS["price"]: "Price Proxy (CAD)",
+                co2_col: "CO2 (g/km)",
+                price_col: "Price Proxy (CAD)",
             },
         )
         st.plotly_chart(fig, use_container_width=True)
@@ -298,20 +301,20 @@ with commercial_tab:
     with c2:
         fig = px.scatter(
             scored_df,
-            x=REQUIRED_COLUMNS["engine"],
-            y=REQUIRED_COLUMNS["price"],
+            x=engine_col,
+            y=price_col,
             color="cluster",
-            symbol="Brand",
+            symbol=brand_col,
             size="business_index",
             hover_data=[
-                "Model",
-                REQUIRED_COLUMNS["co2"],
-                REQUIRED_COLUMNS["sales"],
+                model_col,
+                co2_col,
+                sales_col,
             ],
             title="Cluster-Based Positioning Map",
             labels={
-                REQUIRED_COLUMNS["engine"]: "Engine Size (L)",
-                REQUIRED_COLUMNS["price"]: "Price Proxy (CAD)",
+                engine_col: "Engine Size (L)",
+                price_col: "Price Proxy (CAD)",
             },
         )
         st.plotly_chart(fig, use_container_width=True)
@@ -392,12 +395,12 @@ with professor_tab:
             """
             **Business model logic**
 
-            - Lower CO₂ is treated as better.
+            - Lower CO2 is treated as better.
             - Lower price is treated as more commercially competitive.
             - Lower engine size is treated as more efficient.
             - The business score is a weighted penalty score converted into a 0 to 100 business index.
             - KMeans clustering groups vehicles into commercially comparable segments.
-            - Underperformance is diagnosed from the largest adverse gap in CO₂, price, or engine size relative to the multi-brand average.
+            - Underperformance is diagnosed from the largest adverse gap in CO2, price, or engine size relative to the multi-brand average.
             """
         )
 
