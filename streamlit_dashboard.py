@@ -271,13 +271,13 @@ k5.metric(
 )
 
 
-exec_tab, portfolio_tab, efficiency_tab, commercial_tab, diagnosis_tab, professor_tab = st.tabs([
+exec_tab, portfolio_tab, efficiency_tab, commercial_tab, diagnosis_tab, data_tab = st.tabs([
     "Executive View",
     "Portfolio Performance",
     "Efficiency and Emissions",
     "Commercial Competitiveness",
     "Underperformance Diagnosis",
-    "Professor Data Room",
+    "Data and Support",
 ])
 
 
@@ -531,8 +531,8 @@ with diagnosis_tab:
     )
 
 
-with professor_tab:
-    st.subheader("Professor Data Room")
+with data_tab:
+    st.subheader("Data and Support")
     st.markdown(
         "This section preserves the full analytical detail behind the executive dashboard."
     )
