@@ -61,6 +61,7 @@ def load_results(file_bytes: bytes, filename: str, n_clusters: int, weights: dic
     workbook_path.write_bytes(file_bytes)
 
     output_dir = temp_dir / "business_outputs"
+    output_dir.mkdir(exist_ok=True)
 
     return run_business_model(
         file_path=workbook_path,
@@ -70,12 +71,42 @@ def load_results(file_bytes: bytes, filename: str, n_clusters: int, weights: dic
     )
 
 
+def clean_numeric_series(series: pd.Series) -> pd.Series:
+    if pd.api.types.is_numeric_dtype(series):
+        return pd.to_numeric(series, errors="coerce")
+
+    cleaned = (
+        series.astype(str)
+        .str.replace(",", "", regex=False)
+        .str.replace("$", "", regex=False)
+        .str.replace("CAD", "", regex=False)
+        .str.replace("£", "", regex=False)
+        .str.replace("€", "", regex=False)
+        .str.strip()
+    )
+
+    cleaned = cleaned.replace(
+        {
+            "nan": np.nan,
+            "None": np.nan,
+            "none": np.nan,
+            "N/A": np.nan,
+            "n/a": np.nan,
+            "NA": np.nan,
+            "-": np.nan,
+            "": np.nan,
+        }
+    )
+
+    return pd.to_numeric(cleaned, errors="coerce")
+
+
 def coerce_numeric_columns(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     out = df.copy()
     for col in cols:
         if col in out.columns:
-            out[col] = pd.to_numeric(out[col], errors="coerce")
-    out = out.replace([np.inf, -np.inf], np.nan)
+            out[col] = clean_numeric_series(out[col])
+    out = out.replace([np.inf, -np.inf], np.nan).infer_objects(copy=False)
     return out
 
 
@@ -93,8 +124,18 @@ def prepare_scatter_df(
     numeric_cols = [x_col, y_col]
     if size_col is not None:
         numeric_cols.append(size_col)
-    if "business_index" in plot_df.columns and "business_index" not in numeric_cols:
-        numeric_cols.append("business_index")
+
+    extra_numeric_candidates = ["business_index", "business_score"]
+    for col in extra_numeric_candidates:
+        if col in plot_df.columns and col not in numeric_cols:
+            numeric_cols.append(col)
+
+    if hover_cols:
+        for col in hover_cols:
+            if col in plot_df.columns and col not in numeric_cols:
+                col_lower = str(col).lower()
+                if any(token in col_lower for token in ["price", "sales", "co2", "engine", "index", "score"]):
+                    numeric_cols.append(col)
 
     plot_df = coerce_numeric_columns(plot_df, numeric_cols)
 
@@ -123,18 +164,19 @@ def prepare_scatter_df(
 
         for col in hover_cols:
             if col in plot_df.columns and col not in protected_cols:
-                plot_df[col] = plot_df[col].astype(str)
+                if not pd.api.types.is_numeric_dtype(plot_df[col]):
+                    plot_df[col] = plot_df[col].astype(str)
 
     return plot_df.reset_index(drop=True)
 
 
 def safe_plotly_chart(fig, fallback_df: pd.DataFrame | None = None, message: str | None = None):
     try:
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
     except Exception as e:
         st.warning(message or f"Chart could not be rendered: {e}")
         if fallback_df is not None and not fallback_df.empty:
-            st.dataframe(fallback_df.head(25), use_container_width=True)
+            st.dataframe(fallback_df.head(25), width="stretch")
 
 
 if uploaded is None:
@@ -166,10 +208,21 @@ scored_df = coerce_numeric_columns(
     scored_df,
     [co2_col, engine_col, price_col, sales_col, "business_index", "business_score"]
 )
+
 brand_summary = coerce_numeric_columns(
     brand_summary,
-    ["avg_business_index", "avg_price", "avg_co2", "avg_engine", "total_sales", "co2_gap", "price_gap", "engine_gap"]
+    [
+        "avg_business_index",
+        "avg_price",
+        "avg_co2",
+        "avg_engine",
+        "total_sales",
+        "co2_gap",
+        "price_gap",
+        "engine_gap",
+    ],
 )
+
 cluster_profile = coerce_numeric_columns(
     cluster_profile,
     ["avg_business_index", "avg_price", "avg_co2", "avg_engine", "avg_sales", "vehicles"]
@@ -177,6 +230,12 @@ cluster_profile = coerce_numeric_columns(
 
 if "cluster" in scored_df.columns:
     scored_df["cluster"] = scored_df["cluster"].astype(str)
+
+if brand_col in scored_df.columns:
+    scored_df[brand_col] = scored_df[brand_col].astype(str)
+
+if model_col in scored_df.columns:
+    scored_df[model_col] = scored_df[model_col].astype(str)
 
 
 k1, k2, k3, k4, k5 = st.columns(5)
@@ -228,7 +287,7 @@ with exec_tab:
     c1, c2 = st.columns([1.3, 1])
 
     with c1:
-        top10 = scored_df.nsmallest(10, "business_score").copy()
+        top10 = scored_df.dropna(subset=["business_score", "business_index"]).nsmallest(10, "business_score").copy()
         top10["Vehicle"] = top10[brand_col].astype(str) + " " + top10[model_col].astype(str)
 
         fig = px.bar(
@@ -309,7 +368,7 @@ with portfolio_tab:
                 "underperforming_flag",
             ]
         ],
-        use_container_width=True,
+        width="stretch",
     )
 
 
@@ -420,7 +479,7 @@ with commercial_tab:
         safe_plotly_chart(fig, plot_df_2, "Cluster positioning chart could not be rendered.")
 
     st.markdown("### Cluster Profile")
-    st.dataframe(cluster_profile, use_container_width=True)
+    st.dataframe(cluster_profile, width="stretch")
 
 
 with diagnosis_tab:
@@ -468,7 +527,7 @@ with diagnosis_tab:
                 "underperforming_flag",
             ]
         ],
-        use_container_width=True,
+        width="stretch",
     )
 
 
@@ -479,16 +538,16 @@ with professor_tab:
     )
 
     with st.expander("Vehicle-level scored output", expanded=False):
-        st.dataframe(scored_df, use_container_width=True)
+        st.dataframe(scored_df, width="stretch")
 
     with st.expander("Brand summary", expanded=False):
-        st.dataframe(brand_summary, use_container_width=True)
+        st.dataframe(brand_summary, width="stretch")
 
     with st.expander("Cluster profile", expanded=False):
-        st.dataframe(cluster_profile, use_container_width=True)
+        st.dataframe(cluster_profile, width="stretch")
 
     with st.expander("Top 10 brand share", expanded=False):
-        st.dataframe(top10_share, use_container_width=True)
+        st.dataframe(top10_share, width="stretch")
 
     with st.expander("Method note", expanded=False):
         st.markdown(
